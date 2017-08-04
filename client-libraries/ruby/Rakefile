@@ -7,8 +7,9 @@ require 'tasks/redis.tasks'
 
 
 GEM = 'redis'
-GEM_VERSION = '0.0.3'
-AUTHORS = ['Ezra Zygmuntowicz', 'Taylor Weibley']
+GEM_NAME = 'redis'
+GEM_VERSION = '0.1'
+AUTHORS = ['Ezra Zygmuntowicz', 'Taylor Weibley', 'Matthew Clark', 'Brian McKinney', 'Salvatore Sanfilippo', 'Luca Guidi']
 EMAIL = "ez@engineyard.com"
 HOMEPAGE = "http://github.com/ezmobius/redis-rb"
 SUMMARY = "Ruby client library for redis key value storage server"
@@ -24,13 +25,10 @@ spec = Gem::Specification.new do |s|
   s.authors = AUTHORS
   s.email = EMAIL
   s.homepage = HOMEPAGE
-  
-  # Uncomment this to add a dependency
-  # s.add_dependency "foo"
-  
+  s.add_dependency "rspec"
   s.require_path = 'lib'
   s.autorequire = GEM
-  s.files = %w(LICENSE README.markdown Rakefile) + Dir.glob("{lib,spec}/**/*")
+  s.files = %w(LICENSE README.markdown Rakefile) + Dir.glob("{lib,tasks,spec}/**/*")
 end
 
 task :default => :spec
@@ -55,4 +53,10 @@ task :make_spec do
   File.open("#{GEM}.gemspec", "w") do |file|
     file.puts spec.to_ruby
   end
+end
+
+desc "Run all examples with RCov"
+Spec::Rake::SpecTask.new(:rcov) do |t|
+  t.spec_files = FileList['spec/**/*_spec.rb']
+  t.rcov = true
 end

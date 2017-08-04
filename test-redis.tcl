@@ -18,6 +18,26 @@ proc test {name code okpattern} {
     }
 }
 
+proc randstring {min max {type binary}} {
+    set len [expr {$min+int(rand()*($max-$min+1))}]
+    set output {}
+    if {$type eq {binary}} {
+        set minval 0
+        set maxval 255
+    } elseif {$type eq {alpha}} {
+        set minval 48
+        set maxval 122
+    } elseif {$type eq {compr}} {
+        set minval 48
+        set maxval 52
+    }
+    while {$len} {
+        append output [format "%c" [expr {$minval+int(rand()*($maxval-$minval+1))}]]
+        incr len -1
+    }
+    return $output
+}
+
 proc main {server port} {
     set r [redis $server $port]
     set err ""
@@ -44,6 +64,13 @@ proc main {server port} {
         $r del x
         $r get x
     } {}
+
+    test {Vararg DEL} {
+        $r set foo1 a
+        $r set foo2 b
+        $r set foo3 c
+        list [$r del foo1 foo2 foo3 foo4] [$r mget foo1 foo2 foo3]
+    } {3 {{} {} {}}}
 
     test {KEYS with pattern} {
         foreach key {key_x key_y key_z foo_a foo_b foo_c} {
@@ -100,6 +127,21 @@ proc main {server port} {
         $r set novar 100
         $r incr novar
     } {101}
+
+    test {INCR over 32bit value} {
+        $r set novar 17179869184
+        $r incr novar
+    } {17179869185}
+
+    test {INCRBY over 32bit value with over 32bit increment} {
+        $r set novar 17179869184
+        $r incrby novar 17179869184
+    } {34359738368}
+
+    test {DECRBY over 32bit value with over 32bit increment, negative res} {
+        $r set novar 17179869184
+        $r decrby novar 17179869185
+    } {-1}
 
     test {SETNX target key missing} {
         $r setnx novar2 foobared
@@ -424,11 +466,20 @@ proc main {server port} {
         }
         lsort [$r sinter set1 set2]
     } {995 996 997 998 999}
+
+    test {SUNION with two sets} {
+        lsort [$r sunion set1 set2]
+    } [lsort -uniq "[$r smembers set1] [$r smembers set2]"]
     
     test {SINTERSTORE with two sets} {
         $r sinterstore setres set1 set2
         lsort [$r smembers setres]
     } {995 996 997 998 999}
+
+    test {SUNIONSTORE with two sets} {
+        $r sunionstore setres set1 set2
+        lsort [$r smembers setres]
+    } [lsort -uniq "[$r smembers set1] [$r smembers set2]"]
 
     test {SINTER against three sets} {
         $r sadd set3 999
@@ -442,7 +493,36 @@ proc main {server port} {
         $r sinterstore setres set1 set2 set3
         lsort [$r smembers setres]
     } {995 999}
-    
+
+    test {SUNION with non existing keys} {
+        lsort [$r sunion nokey1 set1 set2 nokey2]
+    } [lsort -uniq "[$r smembers set1] [$r smembers set2]"]
+
+    test {SDIFF with two sets} {
+        for {set i 5} {$i < 1000} {incr i} {
+            $r sadd set4 $i
+        }
+        lsort [$r sdiff set1 set4]
+    } {0 1 2 3 4}
+
+    test {SDIFF with three sets} {
+        $r sadd set5 0
+        lsort [$r sdiff set1 set4 set5]
+    } {1 2 3 4}
+
+    test {SDIFFSTORE with three sets} {
+        $r sdiffstore sres set1 set4 set5
+        lsort [$r smembers sres]
+    } {1 2 3 4}
+
+    test {SPOP basics} {
+        $r del myset
+        $r sadd myset 1
+        $r sadd myset 2
+        $r sadd myset 3
+        list [lsort [list [$r spop myset] [$r spop myset] [$r spop myset]]] [$r scard myset]
+    } {{1 2 3} 0}
+
     test {SAVE - make sure there are all the types as values} {
         $r lpush mysavelist hello
         $r lpush mysavelist world
@@ -610,6 +690,73 @@ proc main {server port} {
         $r flushall
         $r randomkey
     } {}
+
+    test {RANDOMKEY regression 1} {
+        $r flushall
+        $r set x 10
+        $r del x
+        $r randomkey
+    } {}
+
+    test {GETSET (set new value)} {
+        list [$r getset foo xyz] [$r get foo]
+    } {{} xyz}
+
+    test {GETSET (replace old value)} {
+        $r set foo bar
+        list [$r getset foo xyz] [$r get foo]
+    } {bar xyz}
+
+    test {SMOVE basics} {
+        $r sadd myset1 a
+        $r sadd myset1 b
+        $r sadd myset1 c
+        $r sadd myset2 x
+        $r sadd myset2 y
+        $r sadd myset2 z
+        $r smove myset1 myset2 a
+        list [lsort [$r smembers myset2]] [lsort [$r smembers myset1]]
+    } {{a x y z} {b c}}
+
+    test {SMOVE non existing key} {
+        list [$r smove myset1 myset2 foo] [lsort [$r smembers myset2]] [lsort [$r smembers myset1]]
+    } {0 {a x y z} {b c}}
+
+    test {SMOVE non existing src set} {
+        list [$r smove noset myset2 foo] [lsort [$r smembers myset2]]
+    } {0 {a x y z}}
+
+    test {SMOVE non existing dst set} {
+        list [$r smove myset2 myset3 y] [lsort [$r smembers myset2]] [lsort [$r smembers myset3]]
+    } {1 {a x z} y}
+
+    test {SMOVE wrong src key type} {
+        $r set x 10
+        catch {$r smove x myset2 foo} err
+        format $err
+    } {ERR*}
+
+    test {SMOVE wrong dst key type} {
+        $r set x 10
+        catch {$r smove myset2 x foo} err
+        format $err
+    } {ERR*}
+
+    foreach fuzztype {binary alpha compr} {
+        test "FUZZ stresser with data model $fuzztype" {
+            set err 0
+            for {set i 0} {$i < 1000} {incr i} {
+                set fuzz [randstring 0 512 $fuzztype]
+                $r set foo $fuzz
+                set got [$r get foo]
+                if {$got ne $fuzz} {
+                    incr err
+                    break
+                }
+            }
+            format $err
+        } {0}
+    }
 
     # Leave the user with a clean DB before to exit
     test {FLUSHALL} {
